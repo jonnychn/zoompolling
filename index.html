@@ -43,14 +43,25 @@
             No more manual Excel work!
         </p>
 
-        <!-- New Privacy Section -->
+        <!-- New Limitations Section (Yellow) -->
+        <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
+            <strong class="font-bold">Important Limitation:</strong>
+            <span class="block sm:inline ml-2">
+                This tool processes Zoom poll exports designed for **one question per poll** and **single-choice answers**. If a poll contains multiple questions, only the responses for the *last question* will be processed. Multi-select answers are not fully supported and may not be accurately processed.
+                <br><br>
+                For optimal readability, x-axis labels will automatically wrap to multiple lines.
+            </span>
+        </div>
+        <!-- End New Limitations Section -->
+
+        <!-- Privacy Section (Green) -->
         <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
             <strong class="font-bold">Privacy Notice:</strong>
             <span class="block sm:inline ml-2">
                 Your uploaded file is processed entirely within your browser. It is stored locally on your computer and never leaves your device. This is like working directly on an Excel file – no one else sees your data.
             </span>
         </div>
-        <!-- End New Privacy Section -->
+        <!-- End Privacy Section -->
 
         <div class="mb-6">
             <label for="file-upload" class="block text-lg font-medium text-gray-700 mb-2">
@@ -212,77 +223,92 @@
             const lines = csvString.split(/\r?\n/); // Split CSV into lines, handling both \r\n and \n
             const polls = [];
             let currentPoll = null;
-            let inPollSection = false;
-            let pollQuestion = '';
-            let responseColumnIndex = -1;
+            let inLaunchedPollsSummary = false;
+            // Stores poll names from the "Launched Polls" summary, e.g., "Building Cyber Resilience with MDR Poll 1"
+            let pollNamesFromSummary = [];
 
-            // Iterate through each line of the CSV
+            // --- Phase 1: Collect Poll Names from "Launched Polls" summary ---
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i].trim();
-
-                // Skip empty lines
                 if (!line) continue;
 
-                // Check for the "Launched Polls" section to start dynamic parsing
                 if (line.includes('Launched Polls')) {
-                    inPollSection = true;
+                    inLaunchedPollsSummary = true;
+                    // Skip the next line which is the header for the summary table (e.g., "#,Poll Name,Questions,Responses")
+                    i++;
                     continue;
                 }
 
-                // If we are in the general poll section, look for individual poll names
-                if (inPollSection && line.startsWith('#,Poll Name')) {
-                    // This line indicates the start of the poll summary, skip it.
-                    continue;
-                }
-
-                // Identify the start of a new poll's detailed data
-                // This is typically marked by the poll name followed by empty lines or a header.
-                if (line.startsWith('Stop One Click: Poll')) { // Specific pattern from template
-                    // If there was a previous poll, push its data to the polls array
-                    if (currentPoll) {
-                        polls.push(currentPoll);
+                if (inLaunchedPollsSummary) {
+                    // Check if the line is a poll summary entry (starts with digit, then comma)
+                    if (/^\d+,/.test(line)) {
+                        const columns = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+                        if (columns.length >= 2) {
+                            const pollName = columns[1].trim().replace(/"/g, ''); // Extract and clean the poll name
+                            pollNamesFromSummary.push(pollName);
+                        }
+                    } else {
+                        // If we encounter a line that doesn't fit the summary format,
+                        // assume the summary section has ended.
+                        inLaunchedPollsSummary = false;
                     }
-                    // Initialize a new poll object
+                }
+            }
+
+            // --- Phase 2: Parse detailed poll data using collected poll names ---
+            let pollIndexInSummary = 0; // To match with pollNamesFromSummary
+            let responseColumnIndex = -1; // Reset for each poll
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+
+                // Check if this line is a poll header for a detailed section
+                // It should match one of the names collected in Phase 1
+                const potentialPollHeader = line.replace(/,+/g, ''); // Remove extra commas for comparison
+                if (pollIndexInSummary < pollNamesFromSummary.length && potentialPollHeader === pollNamesFromSummary[pollIndexInSummary]) {
+                    // This is the start of a new detailed poll section
+                    if (currentPoll) {
+                        polls.push(currentPoll); // Push the previous poll if exists
+                    }
                     currentPoll = {
-                        name: line.replace(/,+/g, ''), // Clean up the poll name
+                        name: pollNamesFromSummary[pollIndexInSummary], // Use the name from summary
                         question: '',
                         responses: {},
                         data: []
                     };
-                    pollQuestion = ''; // Reset question for the new poll
-                    responseColumnIndex = -1; // Reset response column index
-                    continue;
+                    responseColumnIndex = -1; // Reset response column index for the new poll
+                    pollIndexInSummary++; // Move to the next expected poll name for the next section
+                    continue; // Move to the next line (which should be the header row for responses)
                 }
 
-                // If a current poll is active, process its data
-                if (currentPoll) {
-                    const columns = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/); // Split by comma, ignoring commas inside double quotes
-
-                    // Find the header row for the current poll's detailed data
-                    // This row contains "User Name", "Email Address", "Submitted Date and Time", and the actual question.
-                    if (columns[1] && columns[1].includes('User Name') && columns[2].includes('Email Address')) {
-                        // The last column in this header row is the question
-                        pollQuestion = columns[columns.length - 1].replace(/"/g, '').trim();
-                        currentPoll.question = pollQuestion;
-
-                        // Find the index of the response column (the question column)
-                        responseColumnIndex = columns.length - 1;
-                        continue; // Move to the next line (responses)
+                // If currentPoll is active and we haven't set the question yet, look for the header line
+                if (currentPoll && !currentPoll.question) {
+                    const columns = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+                    // This is the header line for the poll's responses if it contains "User Name" and "Email Address"
+                    // and the last column is the actual question.
+                    if (columns[1] && columns[1].includes('User Name') && columns[2].includes('Email Address') && columns.length > 0) {
+                        currentPoll.question = columns[columns.length - 1].replace(/"/g, '').trim();
+                        responseColumnIndex = columns.length - 1; // Store the index
+                        continue; // Move to the actual response data
                     }
+                }
 
-                    // If we have a question and a valid response column index, process responses
-                    if (pollQuestion && responseColumnIndex !== -1 && columns.length > responseColumnIndex) {
+                // If currentPoll is active and we have the question/response index, process responses
+                if (currentPoll && currentPoll.question && responseColumnIndex !== -1) {
+                    const columns = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+                    // Ensure the line has enough columns to contain a response at the identified index
+                    if (columns.length > responseColumnIndex) {
                         let rawResponse = columns[responseColumnIndex];
-
-                        // Clean up the response string: remove quotes and trim whitespace
                         rawResponse = rawResponse.replace(/"/g, '').trim();
 
-                        // Handle multi-select responses (separated by ';')
+                        // The current logic splits by semicolon, but if the user states it's not supported,
+                        // it implies this split might not yield desired results for their specific multi-select format.
+                        // We will keep the split for now, but the disclaimer states it's not fully supported.
                         const individualResponses = rawResponse.split(';').map(res => res.trim()).filter(res => res !== '');
 
-                        // Aggregate counts for each response
                         individualResponses.forEach(res => {
-                            if (res) { // Ensure response is not empty
+                            if (res) {
                                 currentPoll.responses[res] = (currentPoll.responses[res] || 0) + 1;
                             }
                         });
@@ -290,7 +316,7 @@
                 }
             }
 
-            // After the loop, push the last poll if it exists
+            // Push the last poll if it exists
             if (currentPoll) {
                 polls.push(currentPoll);
             }
@@ -332,6 +358,43 @@
                 return;
             }
 
+            // Helper function to wrap text
+            const wrapText = (text, maxCharsPerLine) => {
+                const words = text.split(' ');
+                let lines = [];
+                let currentLine = '';
+
+                words.forEach(word => {
+                    if ((currentLine + word).length > maxCharsPerLine && currentLine.length > 0) {
+                        lines.push(currentLine.trim());
+                        currentLine = word + ' ';
+                    } else {
+                        currentLine += word + ' ';
+                    }
+                });
+                lines.push(currentLine.trim());
+                return lines;
+            };
+
+            // Define a palette of vibrant colors
+            const colors = [
+                '#4299e1', // Blue
+                '#6b46c1', // Purple
+                '#38b2ac', // Teal
+                '#ed8936', // Orange
+                '#e53e3e', // Red
+                '#3182ce', // Darker Blue
+                '#805ad5', // Lighter Purple
+                '#319795', // Darker Teal
+                '#dd6b20', // Darker Orange
+                '#c53030', // Darker Red
+                '#4fd1c5', // Light Teal
+                '#a3bffa', // Light Blue
+                '#f6ad55', // Light Orange
+                '#fc8181', // Light Red
+                '#9f7aea'  // Light Purple
+            ];
+
             parsedData.forEach((poll, index) => {
                 // Create a div for each poll's content
                 const pollDiv = document.createElement('div');
@@ -352,20 +415,6 @@
                                      transition duration-300 ease-in-out flex-grow sm:flex-grow-0">
                                 Export Data to CSV
                             </button>
-                            <button id="insights-btn-${index}" class="px-6 py-3 bg-purple-600 text-white font-semibold rounded-full shadow-md
-                                     hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75
-                                     transition duration-300 ease-in-out flex-grow sm:flex-grow-0">
-                                ✨ Generate Poll Insights
-                            </button>
-                        </div>
-                        <div id="insights-output-${index}" class="mt-6 p-4 bg-blue-50 rounded-md border border-blue-200 text-gray-800 w-full hidden">
-                            <p class="font-semibold mb-2">Generated Insights:</p>
-                            <p id="insights-text-${index}" class="text-sm"></p>
-                            <div id="insights-loading-${index}" class="hidden flex justify-center items-center py-2">
-                                <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
-                                <p class="ml-2 text-blue-600 text-sm">Generating insights...</p>
-                            </div>
-                            <div id="insights-error-${index}" class="hidden bg-red-100 border border-red-400 text-red-700 px-2 py-1 rounded text-xs mt-2"></div>
                         </div>
                     </div>
                 `;
@@ -378,6 +427,9 @@
                 const labels = poll.data.map(item => item.name);
                 const values = poll.data.map(item => item.value);
 
+                // Assign colors dynamically, cycling through the palette
+                const backgroundColors = poll.data.map((_, i) => colors[i % colors.length]);
+
                 // Create the Chart.js bar chart
                 chartInstances[`chart-${index}`] = new Chart(ctx, {
                     type: 'bar',
@@ -386,7 +438,7 @@
                         datasets: [{
                             label: 'Responses',
                             data: values,
-                            backgroundColor: '#4299e1', // Tailwind blue-500
+                            backgroundColor: backgroundColors, // Use the colorful array
                             borderRadius: 10, // Rounded corners for bars
                         }]
                     },
@@ -431,8 +483,14 @@
                                         family: 'Inter',
                                         size: 12,
                                     },
-                                    maxRotation: 45, // Rotate labels for readability
-                                    minRotation: 45,
+                                    // Callback to wrap x-axis labels
+                                    callback: function(value, index, values) {
+                                        const label = this.getLabelForValue(value);
+                                        // Wrap text at approximately 25 characters per line
+                                        return wrapText(label, 25);
+                                    },
+                                    maxRotation: 45, // Keep some rotation for very short lines
+                                    minRotation: 0, // Allow horizontal display if short enough
                                 },
                                 grid: {
                                     display: false // Hide x-axis grid lines
@@ -467,11 +525,6 @@
                 // Attach export event listener to the button
                 document.getElementById(`export-btn-${index}`).addEventListener('click', () => {
                     exportPollDataToCsv(poll);
-                });
-
-                // Attach insights event listener to the button
-                document.getElementById(`insights-btn-${index}`).addEventListener('click', () => {
-                    generatePollInsights(poll, index);
                 });
             });
         };
@@ -593,72 +646,6 @@
             exportAllButton.textContent = 'Export All Poll Data (Zip)';
             exportAllButton.disabled = false; // Re-enable button
         };
-
-        /**
-         * Generates insights for a given poll using the Gemini API.
-         * This function now calls a Vercel serverless function.
-         * @param {Object} poll - The poll object to generate insights for.
-         * @param {number} index - The index of the poll for DOM element targeting.
-         */
-        const generatePollInsights = async (poll, index) => {
-            const insightsOutputDiv = document.getElementById(`insights-output-${index}`);
-            const insightsTextP = document.getElementById(`insights-text-${index}`);
-            const insightsLoadingDiv = document.getElementById(`insights-loading-${index}`);
-            const insightsErrorDiv = document.getElementById(`insights-error-${index}`);
-            const insightsButton = document.getElementById(`insights-btn-${index}`);
-
-            // Reset UI
-            insightsOutputDiv.classList.add('hidden');
-            insightsTextP.textContent = '';
-            insightsErrorDiv.classList.add('hidden');
-            insightsErrorDiv.textContent = '';
-            insightsLoadingDiv.classList.remove('hidden');
-            insightsButton.disabled = true; // Disable button during API call
-
-            try {
-                // Construct the prompt for the LLM
-                const prompt = `Analyze the following poll results and provide a concise summary of key insights. Highlight the most popular choices and any interesting observations about the response distribution.
-
-Poll Question: "${poll.question}"
-
-Results:
-${poll.data.map(item => `- ${item.name}: ${item.value} responses (${item.percentage}%)`).join('\n')}
-
-Provide a summary in 2-3 sentences.`;
-
-                // --- CHANGE HERE: Call your Vercel serverless function ---
-                const apiUrl = '/api/generate-insights'; // Endpoint for your Vercel serverless function
-
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: prompt }) // Send the prompt to your serverless function
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-                }
-
-                const result = await response.json();
-
-                if (result.text) { // Serverless function now returns { text: "..." }
-                    insightsTextP.textContent = result.text;
-                    insightsOutputDiv.classList.remove('hidden'); // Show output div
-                } else {
-                    insightsErrorDiv.classList.remove('hidden');
-                    insightsErrorDiv.textContent = 'Failed to get insights from AI. Unexpected response structure from serverless function.';
-                }
-            } catch (error) {
-                console.error('Error generating poll insights:', error);
-                insightsErrorDiv.classList.remove('hidden');
-                insightsErrorDiv.textContent = `Error generating insights: ${error.message || 'Network error'}.`;
-            } finally {
-                insightsLoadingDiv.classList.add('hidden'); // Hide loading indicator
-                insightsButton.disabled = false; // Re-enable button
-            }
-        };
-
 
         // Attach event listener to the new "Export All" button
         exportAllButton.addEventListener('click', exportAllDataToZip);

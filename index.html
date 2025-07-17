@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zoom Polling Data Visualizer</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter font from Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js CDN for charting -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <!-- JSZip CDN for creating zip files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- FileSaver.js CDN for saving files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <style>
+        /* Custom styles for better aesthetics and responsiveness */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Ensure canvas elements are responsive */
+        canvas {
+            max-width: 100%;
+            height: auto; /* This allows Chart.js to manage height based on options */
+        }
+        /* Hide the default file input text */
+        input[type="file"]::file-selector-button {
+            display: none;
+        }
+        input[type="file"] {
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100 flex flex-col items-center py-10">
+    <div class="bg-white p-8 rounded-lg shadow-xl w-full max-w-3xl mb-8">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">
+            Zoom Polling Data Visualizer
+        </h1>
+        <p class="text-gray-600 mb-6 text-center">
+            Upload your Zoom webinar polling CSV file to automatically generate charts.
+            No more manual Excel work!
+        </p>
+
+        <div class="mb-6">
+            <label for="file-upload" class="block text-lg font-medium text-gray-700 mb-2">
+                Upload CSV File:
+            </label>
+            <input
+                id="file-upload"
+                type="file"
+                accept=".csv"
+                class="block w-full text-sm text-gray-500
+                       file:mr-4 file:py-2 file:px-4
+                       file:rounded-full file:border-0
+                       file:text-sm file:font-semibold
+                       file:bg-blue-50 file:text-blue-700
+                       hover:file:bg-blue-100 cursor-pointer rounded-md border border-gray-300 p-2"
+            />
+            <p id="file-name-display" class="mt-2 text-sm text-gray-500 hidden">
+                Selected file: <span class="font-semibold" id="selected-file-name"></span>
+            </p>
+        </div>
+
+        <div id="loading-indicator" class="hidden flex justify-center items-center py-8">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+            <p class="ml-4 text-blue-600 text-lg">Processing data...</p>
+        </div>
+
+        <div id="error-message" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6" role="alert">
+            <strong class="font-bold">Error!</strong>
+            <span class="block sm:inline ml-2" id="error-text"></span>
+        </div>
+
+        <div id="polling-results" class="mt-8 hidden">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">
+                Polling Results
+            </h2>
+            <button id="export-all-btn" class="mb-6 px-6 py-3 bg-indigo-600 text-white font-semibold rounded-full shadow-md
+                                 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75
+                                 transition duration-300 ease-in-out w-full md:w-auto">
+                Export All Poll Data (Zip)
+            </button>
+            <div id="charts-container">
+                <!-- Charts will be dynamically inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Get DOM elements
+        const fileUploadInput = document.getElementById('file-upload');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const errorMessage = document.getElementById('error-message');
+        const errorText = document.getElementById('error-text');
+        const pollingResultsContainer = document.getElementById('polling-results');
+        const chartsContainer = document.getElementById('charts-container');
+        const fileNameDisplay = document.getElementById('file-name-display');
+        const selectedFileNameSpan = document.getElementById('selected-file-name');
+        const exportAllButton = document.getElementById('export-all-btn');
+
+        // Store Chart.js instances to destroy them before re-rendering
+        let chartInstances = {};
+        let currentParsedData = []; // Store parsed data globally for exportAllDataToZip
+
+        /**
+         * Displays an error message to the user.
+         * @param {string} message - The error message to display.
+         */
+        const showError = (message) => {
+            errorMessage.classList.remove('hidden');
+            errorText.textContent = message;
+        };
+
+        /**
+         * Hides the error message.
+         */
+        const hideError = () => {
+            errorMessage.classList.add('hidden');
+            errorText.textContent = '';
+        };
+
+        /**
+         * Shows the loading indicator.
+         */
+        const showLoading = () => {
+            loadingIndicator.classList.remove('hidden');
+        };
+
+        /**
+         * Hides the loading indicator.
+         */
+        const hideLoading = () => {
+            loadingIndicator.classList.add('hidden');
+        };
+
+        /**
+         * Handles the file upload event.
+         * Reads the CSV file and triggers the parsing process.
+         * @param {Event} event - The file input change event.
+         */
+        fileUploadInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) {
+                showError('Please select a CSV file.');
+                return;
+            }
+
+            // Check if the file type is CSV
+            if (file.type !== 'text/csv' && !file.name.endsWith('.csv')) {
+                showError('Invalid file type. Please upload a CSV file.');
+                return;
+            }
+
+            hideError();
+            showLoading();
+            pollingResultsContainer.classList.add('hidden'); // Hide previous results
+            chartsContainer.innerHTML = ''; // Clear previous charts
+            selectedFileNameSpan.textContent = file.name;
+            fileNameDisplay.classList.remove('hidden');
+            exportAllButton.classList.add('hidden'); // Hide export all button until data is ready
+
+
+            const reader = new FileReader();
+
+            // Event listener for when the file reading is complete
+            reader.onload = (e) => {
+                try {
+                    const csvContent = e.target.result;
+                    currentParsedData = parseCsvData(csvContent); // Parse the CSV content and store
+                    renderCharts(currentParsedData); // Render charts from parsed data
+                    pollingResultsContainer.classList.remove('hidden'); // Show results section
+                    if (currentParsedData.length > 0) {
+                        exportAllButton.classList.remove('hidden'); // Show export all button
+                    }
+                } catch (err) {
+                    console.error('Error parsing CSV:', err);
+                    showError('Failed to parse CSV data. Please ensure it\'s a valid polling export.');
+                    currentParsedData = []; // Clear data on error
+                } finally {
+                    hideLoading(); // End loading
+                }
+            };
+
+            // Event listener for file reading errors
+            reader.onerror = () => {
+                hideLoading();
+                showError('Error reading file. Please try again.');
+                currentParsedData = []; // Clear data on error
+            };
+
+            reader.readAsText(file); // Read the file as text
+        });
+
+        /**
+         * Parses the raw CSV content to extract polling data.
+         * This function dynamically identifies poll sections and aggregates responses.
+         * @param {string} csvString - The raw CSV content as a string.
+         * @returns {Array<Object>} An array of poll objects, each containing question and response data.
+         */
+        const parseCsvData = (csvString) => {
+            const lines = csvString.split(/\r?\n/); // Split CSV into lines, handling both \r\n and \n
+            const polls = [];
+            let currentPoll = null;
+            let inPollSection = false;
+            let pollQuestion = '';
+            let responseColumnIndex = -1;
+
+            // Iterate through each line of the CSV
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+
+                // Skip empty lines
+                if (!line) continue;
+
+                // Check for the "Launched Polls" section to start dynamic parsing
+                if (line.includes('Launched Polls')) {
+                    inPollSection = true;
+                    continue;
+                }
+
+                // If we are in the general poll section, look for individual poll names
+                if (inPollSection && line.startsWith('#,Poll Name')) {
+                    // This line indicates the start of the poll summary, skip it.
+                    continue;
+                }
+
+                // Identify the start of a new poll's detailed data
+                // This is typically marked by the poll name followed by empty lines or a header.
+                if (line.startsWith('Stop One Click: Poll')) { // Specific pattern from template
+                    // If there was a previous poll, push its data to the polls array
+                    if (currentPoll) {
+                        polls.push(currentPoll);
+                    }
+                    // Initialize a new poll object
+                    currentPoll = {
+                        name: line.replace(/,+/g, ''), // Clean up the poll name
+                        question: '',
+                        responses: {},
+                        data: []
+                    };
+                    pollQuestion = ''; // Reset question for the new poll
+                    responseColumnIndex = -1; // Reset response column index
+                    continue;
+                }
+
+                // If a current poll is active, process its data
+                if (currentPoll) {
+                    const columns = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/); // Split by comma, ignoring commas inside double quotes
+
+                    // Find the header row for the current poll's detailed data
+                    // This row contains "User Name", "Email Address", "Submitted Date and Time", and the actual question.
+                    if (columns[1] && columns[1].includes('User Name') && columns[2].includes('Email Address')) {
+                        // The last column in this header row is the question
+                        pollQuestion = columns[columns.length - 1].replace(/"/g, '').trim();
+                        currentPoll.question = pollQuestion;
+
+                        // Find the index of the response column (the question column)
+                        responseColumnIndex = columns.length - 1;
+                        continue; // Move to the next line (responses)
+                    }
+
+                    // If we have a question and a valid response column index, process responses
+                    if (pollQuestion && responseColumnIndex !== -1 && columns.length > responseColumnIndex) {
+                        let rawResponse = columns[responseColumnIndex];
+
+                        // Clean up the response string: remove quotes and trim whitespace
+                        rawResponse = rawResponse.replace(/"/g, '').trim();
+
+                        // Handle multi-select responses (separated by ';')
+                        const individualResponses = rawResponse.split(';').map(res => res.trim()).filter(res => res !== '');
+
+                        // Aggregate counts for each response
+                        individualResponses.forEach(res => {
+                            if (res) { // Ensure response is not empty
+                                currentPoll.responses[res] = (currentPoll.responses[res] || 0) + 1;
+                            }
+                        });
+                    }
+                }
+            }
+
+            // After the loop, push the last poll if it exists
+            if (currentPoll) {
+                polls.push(currentPoll);
+            }
+
+            // Transform aggregated responses into an array of objects suitable for charting
+            polls.forEach(poll => {
+                const totalResponses = Object.values(poll.responses).reduce((sum, count) => sum + count, 0);
+
+                poll.data = Object.keys(poll.responses).map(res => ({
+                    name: res,
+                    value: poll.responses[res],
+                    percentage: totalResponses > 0 ? ((poll.responses[res] / totalResponses) * 100).toFixed(1) : 0
+                }));
+
+                // Sort data by value in descending order
+                poll.data.sort((a, b) => b.value - a.value);
+            });
+
+            return polls;
+        };
+
+        /**
+         * Renders the charts based on the parsed polling data.
+         * @param {Array<Object>} parsedData - An array of poll objects.
+         */
+        const renderCharts = (parsedData) => {
+            // Destroy existing chart instances before creating new ones
+            for (const id in chartInstances) {
+                if (chartInstances[id]) {
+                    chartInstances[id].destroy();
+                }
+            }
+            chartInstances = {}; // Reset the storage
+
+            chartsContainer.innerHTML = ''; // Clear previous charts from the DOM
+
+            if (parsedData.length === 0) {
+                chartsContainer.innerHTML = '<p class="text-gray-500 text-center">No polling data found or parsed.</p>';
+                return;
+            }
+
+            parsedData.forEach((poll, index) => {
+                // Create a div for each poll's content
+                const pollDiv = document.createElement('div');
+                pollDiv.className = 'bg-gray-50 p-6 rounded-lg shadow-md mb-8';
+
+                // Add poll name and question
+                pollDiv.innerHTML = `
+                    <h3 class="text-xl font-semibold text-gray-700 mb-4">${poll.name}</h3>
+                    <p class="text-lg text-gray-600 mb-6 italic">Question: "${poll.question}"</p>
+                    <div class="flex flex-col items-center">
+                        <div class="w-full">
+                            <!-- Increased height attribute for the canvas -->
+                            <canvas id="chart-${index}" height="450"></canvas>
+                        </div>
+                        <div class="flex flex-col sm:flex-row gap-4 mt-6 w-full justify-center">
+                            <button id="export-btn-${index}" class="px-6 py-3 bg-green-600 text-white font-semibold rounded-full shadow-md
+                                     hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75
+                                     transition duration-300 ease-in-out flex-grow sm:flex-grow-0">
+                                Export Data to CSV
+                            </button>
+                            <button id="insights-btn-${index}" class="px-6 py-3 bg-purple-600 text-white font-semibold rounded-full shadow-md
+                                     hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75
+                                     transition duration-300 ease-in-out flex-grow sm:flex-grow-0">
+                                ✨ Generate Poll Insights
+                            </button>
+                        </div>
+                        <div id="insights-output-${index}" class="mt-6 p-4 bg-blue-50 rounded-md border border-blue-200 text-gray-800 w-full hidden">
+                            <p class="font-semibold mb-2">Generated Insights:</p>
+                            <p id="insights-text-${index}" class="text-sm"></p>
+                            <div id="insights-loading-${index}" class="hidden flex justify-center items-center py-2">
+                                <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                                <p class="ml-2 text-blue-600 text-sm">Generating insights...</p>
+                            </div>
+                            <div id="insights-error-${index}" class="hidden bg-red-100 border border-red-400 text-red-700 px-2 py-1 rounded text-xs mt-2"></div>
+                        </div>
+                    </div>
+                `;
+                chartsContainer.appendChild(pollDiv);
+
+                // Get the canvas element for the current chart
+                const ctx = document.getElementById(`chart-${index}`).getContext('2d');
+
+                // Prepare data for Chart.js
+                const labels = poll.data.map(item => item.name);
+                const values = poll.data.map(item => item.value);
+
+                // Create the Chart.js bar chart
+                chartInstances[`chart-${index}`] = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Responses',
+                            data: values,
+                            backgroundColor: '#4299e1', // Tailwind blue-500
+                            borderRadius: 10, // Rounded corners for bars
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false, // Allow canvas to resize freely based on explicit height
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                labels: {
+                                    font: {
+                                        family: 'Inter',
+                                    }
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const label = context.dataset.label || '';
+                                        const value = context.parsed.y;
+                                        const percentage = poll.data.find(d => d.name === context.label)?.percentage || '0.0';
+                                        return `${label}: ${value} (${percentage}%)`;
+                                    }
+                                },
+                                bodyFont: {
+                                    family: 'Inter',
+                                },
+                                titleFont: {
+                                    family: 'Inter',
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                beginAtZero: true,
+                                title: {
+                                    display: false, // No X-axis title needed here
+                                },
+                                ticks: {
+                                    font: {
+                                        family: 'Inter',
+                                        size: 12,
+                                    },
+                                    maxRotation: 45, // Rotate labels for readability
+                                    minRotation: 45,
+                                },
+                                grid: {
+                                    display: false // Hide x-axis grid lines
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: {
+                                    display: true,
+                                    text: 'Number of Responses',
+                                    font: {
+                                        family: 'Inter',
+                                        size: 14,
+                                        weight: 'bold'
+                                    },
+                                    color: '#555'
+                                },
+                                ticks: {
+                                    font: {
+                                        family: 'Inter',
+                                    },
+                                    precision: 0 // Ensure integer ticks
+                                },
+                                grid: {
+                                    color: '#e0e0e0' // Light grey grid lines
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Attach export event listener to the button
+                document.getElementById(`export-btn-${index}`).addEventListener('click', () => {
+                    exportPollDataToCsv(poll);
+                });
+
+                // Attach insights event listener to the button
+                document.getElementById(`insights-btn-${index}`).addEventListener('click', () => {
+                    generatePollInsights(poll, index);
+                });
+            });
+        };
+
+        /**
+         * Exports the data for a specific poll to a CSV file.
+         * @param {Object} poll - The poll object containing data to export.
+         */
+        const exportPollDataToCsv = (poll) => {
+            if (!poll || !poll.data || poll.data.length === 0) {
+                showError('No data to export for this poll.');
+                return;
+            }
+
+            // Define CSV header
+            const csvHeader = ["Answer", "Responses", "Percentage"];
+            // Map poll data to CSV rows
+            const csvRows = poll.data.map(item => [
+                `"${item.name.replace(/"/g, '""')}"`, // Enclose in quotes and escape internal quotes
+                item.value,
+                `${item.percentage}%`
+            ]);
+
+            // Combine header and rows
+            const csvContent = [
+                csvHeader.join(','),
+                ...csvRows.map(row => row.join(','))
+            ].join('\n');
+
+            // Create a Blob and a download link
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            if (link.download !== undefined) { // Feature detection for download attribute
+                const url = URL.createObjectURL(blob);
+                link.setAttribute('href', url);
+                link.setAttribute('download', `${poll.name.replace(/\s+/g, '_')}_data.csv`);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } else {
+                // Fallback for browsers that- don't support the download attribute
+                // This is less ideal as it might open the CSV in a new tab
+                window.open('data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent));
+            }
+        };
+
+        /**
+         * Exports all poll data (charts as PNG, tables as CSV) into a single zip file.
+         */
+        const exportAllDataToZip = async () => {
+            if (currentParsedData.length === 0) {
+                showError('No data to export. Please upload a CSV file first.');
+                return;
+            }
+
+            hideError(); // Clear any previous errors
+            exportAllButton.textContent = 'Generating Zip...';
+            exportAllButton.disabled = true; // Disable button during export
+
+            const zip = new JSZip();
+            let hasErrorDuringExport = false;
+
+            for (let i = 0; i < currentParsedData.length; i++) {
+                const poll = currentParsedData[i];
+                const cleanPollName = poll.name.replace(/[^a-zA-Z0-9_ -]/g, '').replace(/\s+/g, '_'); // Sanitize filename
+
+                // 1. Add CSV data to zip
+                try {
+                    const csvHeader = ["Answer", "Responses", "Percentage"];
+                    const csvRows = poll.data.map(item => [
+                        `"${item.name.replace(/"/g, '""')}"`,
+                        item.value,
+                        `${item.percentage}%`
+                    ]);
+                    const csvContent = [
+                        csvHeader.join(','),
+                        ...csvRows.map(row => row.join(','))
+                    ].join('\n');
+                    zip.file(`${cleanPollName}_data.csv`, csvContent);
+                } catch (e) {
+                    console.error(`Error adding CSV for ${poll.name}:`, e);
+                    showError(`Failed to add CSV for "${poll.name}" to zip.`);
+                    hasErrorDuringExport = true;
+                    break; // Stop if there's an error with one file
+                }
+
+                // 2. Add Chart image to zip
+                try {
+                    const canvas = document.getElementById(`chart-${i}`);
+                    if (canvas) {
+                        // Ensure the chart is rendered and visible before attempting to export
+                        // Chart.js `toBase64Image` is a more robust way than `canvas.toDataURL`
+                        // for Chart.js specific canvases.
+                        const imageData = canvas.toDataURL('image/png');
+                        const base64Data = imageData.split(',')[1];
+                        zip.file(`${cleanPollName}_chart.png`, base64Data, { base64: true });
+                    } else {
+                        console.warn(`Canvas for chart-${i} not found. Skipping image export for ${poll.name}.`);
+                    }
+                } catch (e) {
+                    console.error(`Error adding chart image for ${poll.name}:`, e);
+                    showError(`Failed to add chart image for "${poll.name}" to zip.`);
+                    hasErrorDuringExport = true;
+                    break; // Stop if there's an error with one file
+                }
+            }
+
+            if (!hasErrorDuringExport) {
+                try {
+                    const zipBlob = await zip.generateAsync({ type: "blob" });
+                    saveAs(zipBlob, `Zoom_Polling_Results_${new Date().toISOString().slice(0, 10)}.zip`);
+                } catch (e) {
+                    console.error('Error generating or saving zip file:', e);
+                    showError('Failed to generate or save the zip file.');
+                }
+            }
+
+            exportAllButton.textContent = 'Export All Poll Data (Zip)';
+            exportAllButton.disabled = false; // Re-enable button
+        };
+
+        /**
+         * Generates insights for a given poll using the Gemini API.
+         * This function now calls a Vercel serverless function.
+         * @param {Object} poll - The poll object to generate insights for.
+         * @param {number} index - The index of the poll for DOM element targeting.
+         */
+        const generatePollInsights = async (poll, index) => {
+            const insightsOutputDiv = document.getElementById(`insights-output-${index}`);
+            const insightsTextP = document.getElementById(`insights-text-${index}`);
+            const insightsLoadingDiv = document.getElementById(`insights-loading-${index}`);
+            const insightsErrorDiv = document.getElementById(`insights-error-${index}`);
+            const insightsButton = document.getElementById(`insights-btn-${index}`);
+
+            // Reset UI
+            insightsOutputDiv.classList.add('hidden');
+            insightsTextP.textContent = '';
+            insightsErrorDiv.classList.add('hidden');
+            insightsErrorDiv.textContent = '';
+            insightsLoadingDiv.classList.remove('hidden');
+            insightsButton.disabled = true; // Disable button during API call
+
+            try {
+                // Construct the prompt for the LLM
+                const prompt = `Analyze the following poll results and provide a concise summary of key insights. Highlight the most popular choices and any interesting observations about the response distribution.
+
+Poll Question: "${poll.question}"
+
+Results:
+${poll.data.map(item => `- ${item.name}: ${item.value} responses (${item.percentage}%)`).join('\n')}
+
+Provide a summary in 2-3 sentences.`;
+
+                // --- CHANGE HERE: Call your Vercel serverless function ---
+                const apiUrl = '/api/generate-insights'; // Endpoint for your Vercel serverless function
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: prompt }) // Send the prompt to your serverless function
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+
+                if (result.text) { // Serverless function now returns { text: "..." }
+                    insightsTextP.textContent = result.text;
+                    insightsOutputDiv.classList.remove('hidden'); // Show output div
+                } else {
+                    insightsErrorDiv.classList.remove('hidden');
+                    insightsErrorDiv.textContent = 'Failed to get insights from AI. Unexpected response structure from serverless function.';
+                }
+            } catch (error) {
+                console.error('Error generating poll insights:', error);
+                insightsErrorDiv.classList.remove('hidden');
+                insightsErrorDiv.textContent = `Error generating insights: ${error.message || 'Network error'}.`;
+            } finally {
+                insightsLoadingDiv.classList.add('hidden'); // Hide loading indicator
+                insightsButton.disabled = false; // Re-enable button
+            }
+        };
+
+
+        // Attach event listener to the new "Export All" button
+        exportAllButton.addEventListener('click', exportAllDataToZip);
+
+        // Initial setup for the file input display
+        if (fileUploadInput.files.length > 0) {
+            selectedFileNameSpan.textContent = fileUploadInput.files[0].name;
+            fileNameDisplay.classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
